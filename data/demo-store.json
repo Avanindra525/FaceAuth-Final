@@ -1,0 +1,135 @@
+{
+  "employees": [
+    {
+      "id": "emp-001",
+      "employeeId": "FA-1024",
+      "name": "Aarav Mehta",
+      "email": "aarav@faceauth.local",
+      "department": "Engineering",
+      "designation": "Platform Engineer",
+      "status": "active",
+      "embedding": "seed-aarav"
+    },
+    {
+      "id": "emp-002",
+      "employeeId": "FA-1088",
+      "name": "Nisha Rao",
+      "email": "nisha@faceauth.local",
+      "department": "Security",
+      "designation": "Security Analyst",
+      "status": "active",
+      "embedding": "seed-nisha"
+    },
+    {
+      "id": "db1415c6-f9e9-4ab2-94c4-0e232294cd26",
+      "employeeId": "1111",
+      "name": "Avi",
+      "email": "avanindrachitty@gmail.com",
+      "department": "IT",
+      "designation": "Manager",
+      "status": "active",
+      "embedding": "5c15e829f73f5154b073bbd95f067ab135c4246ce25c1bca3871bb092e29ab42",
+      "createdAt": "2026-07-27T05:19:49.653532+00:00"
+    }
+  ],
+  "audits": [
+    {
+      "id": "9ab272b7-eada-46b5-af29-6e779298813f",
+      "timestamp": "2026-07-27T05:20:16.684835+00:00",
+      "action": "identity.lookup",
+      "actor": "admin",
+      "detail": "match=False; score=0.00"
+    },
+    {
+      "id": "80f22e24-ae7b-45b4-8c65-1ec5b0d94ba3",
+      "timestamp": "2026-07-27T05:20:15.105466+00:00",
+      "action": "identity.lookup",
+      "actor": "admin",
+      "detail": "match=False; score=0.00"
+    },
+    {
+      "id": "4cf7b2dc-2320-40c8-b7eb-8b366e0427bb",
+      "timestamp": "2026-07-27T05:20:06.286180+00:00",
+      "action": "auth.failed",
+      "actor": "1111",
+      "detail": "score=0.00"
+    },
+    {
+      "id": "23a40dbc-3f4d-49a5-945f-13b4660386f5",
+      "timestamp": "2026-07-27T05:20:06.160588+00:00",
+      "action": "auth.failed",
+      "actor": "1111",
+      "detail": "score=0.00"
+    },
+    {
+      "id": "50c40ef9-bb57-4577-82ae-3cee16e26fcf",
+      "timestamp": "2026-07-27T05:20:04.545804+00:00",
+      "action": "auth.failed",
+      "actor": "1111",
+      "detail": "score=0.00"
+    },
+    {
+      "id": "4c423d65-5350-4e66-bd4b-7ac7edc821a5",
+      "timestamp": "2026-07-27T05:20:04.266611+00:00",
+      "action": "auth.failed",
+      "actor": "1111",
+      "detail": "score=0.00"
+    },
+    {
+      "id": "93a31c2d-9409-4dcf-9894-54dbc6e5ace8",
+      "timestamp": "2026-07-27T05:20:04.001094+00:00",
+      "action": "auth.failed",
+      "actor": "1111",
+      "detail": "score=0.00"
+    },
+    {
+      "id": "ba5aa330-7432-4420-bcf2-3e74494d1bca",
+      "timestamp": "2026-07-27T05:20:02.060405+00:00",
+      "action": "auth.failed",
+      "actor": "1111",
+      "detail": "score=0.00"
+    },
+    {
+      "id": "aa8afe5f-8502-4bdf-9938-777875f20c21",
+      "timestamp": "2026-07-27T05:20:02.016282+00:00",
+      "action": "auth.failed",
+      "actor": "1111",
+      "detail": "score=0.00"
+    },
+    {
+      "id": "d2453dee-5f71-46b8-9f33-3a5e53309070",
+      "timestamp": "2026-07-27T05:20:01.891146+00:00",
+      "action": "auth.failed",
+      "actor": "1111",
+      "detail": "score=0.00"
+    },
+    {
+      "id": "34803fdd-bc41-4c27-9ddb-99c03851ec5c",
+      "timestamp": "2026-07-27T05:20:01.762944+00:00",
+      "action": "auth.failed",
+      "actor": "1111",
+      "detail": "score=0.00"
+    },
+    {
+      "id": "7d25482b-f30d-4774-84df-8e972e31586b",
+      "timestamp": "2026-07-27T05:20:00.238190+00:00",
+      "action": "auth.failed",
+      "actor": "1111",
+      "detail": "score=0.00"
+    },
+    {
+      "id": "b3f5e855-4fdc-4888-91ef-1f8221fe48f4",
+      "timestamp": "2026-07-27T05:19:59.108450+00:00",
+      "action": "auth.failed",
+      "actor": "1111",
+      "detail": "score=0.00"
+    },
+    {
+      "id": "5dfdde17-145c-4d75-baa2-32568ec9058c",
+      "timestamp": "2026-07-27T05:19:49.653532+00:00",
+      "action": "employee.enrolled",
+      "actor": "admin",
+      "detail": "1111"
+    }
+  ]
+}
