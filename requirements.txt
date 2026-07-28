@@ -7,7 +7,7 @@ firebase-admin==6.5.0
 opencv-python-headless==4.10.0.84
 python-dotenv==1.0.1
 insightface==0.7.3
-onnxruntime==1.18.1
+onnxruntime==1.22.0
 mediapipe==0.10.14
 scikit-learn==1.5.1
 openpyxl==3.1.5
