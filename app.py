@@ -34,6 +34,15 @@ JWT_SECRET = os.getenv("JWT_SECRET")
 THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "0.80"))
 MODEL_VERSION = os.getenv("INSIGHTFACE_MODEL", "buffalo_l")
 
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return {
+        "status": "running",
+        "project": "FaceAuth Enterprise",
+        "message": "Backend is live!"
+    }
 
 def utcnow(): return datetime.now(timezone.utc)
 def iso(): return utcnow().isoformat()
