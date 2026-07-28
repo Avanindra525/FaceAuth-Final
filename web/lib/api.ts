@@ -1,7 +1,7 @@
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ||
-  "process.env.NEXT_PUBLIC_API_URL";
-
+  "https://faceauth-final.onrender.com";
+  
 type ApiOptions = {
   token?: string;
   method?: string;
