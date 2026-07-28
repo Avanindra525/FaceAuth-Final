@@ -1,14 +1,11 @@
-import firebase_admin
-from firebase_admin import credentials
-from firebase_admin import firestore
+import os
+import json
+import FaceAu_admin
+from FaceAu_admin import credentials
 
-cred = credentials.Certificate("serviceAccountKey.json")
+FaceAu_json = os.getenv("FaceAu_CREDENTIALS")
 
-firebase_admin.initialize_app(cred)
+cred = credentials.Certificate(json.loads(FaceAu_json))
 
-db = firestore.client()
-print("✅ Firebase connected successfully!")
-
-doc = db.collection("test").document("connection")
-doc.set({"status": "Connected"})
-print("✅ Test document written to Firestore!")
+if not FaceAu_admin._apps:
+    FaceAu_admin.initialize_app(cred)
