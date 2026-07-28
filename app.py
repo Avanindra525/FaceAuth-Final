@@ -338,4 +338,10 @@ def seed_firebase_test_employee():
     db().collection("employees").document("EMP001").set({"employeeId": "EMP001", "name": "Test User", "status": "inactive", "createdAt": iso()})
     print("Connected Successfully")
 
-if __name__ == "__main__": app.run(port=5000, debug=True)
+
+if __name__ == "__main__":
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000)),
+        debug=False
+    )
