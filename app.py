@@ -38,12 +38,17 @@ MODEL_VERSION = os.getenv("INSIGHTFACE_MODEL", "buffalo_l")
 def utcnow(): return datetime.now(timezone.utc)
 def iso(): return utcnow().isoformat()
 
+import json
+import os
+
 def db():
-    """Return Firestore client using serviceAccountKey.json"""
     if not firebase_admin._apps:
-        cred = credentials.Certificate(
-            Path(__file__).parent / "serviceAccountKey.json"
-        )
+        cred_json = os.environ.get("FIREBASE_CREDENTIALS")
+
+        if not cred_json:
+            raise RuntimeError("FIREBASE_CREDENTIALS environment variable is missing.")
+
+        cred = credentials.Certificate(json.loads(cred_json))
         firebase_admin.initialize_app(cred)
 
     return firestore.client()
