@@ -26,15 +26,20 @@ from services.biometrics import (BiometricError, average_embeddings, cosine_simi
                                  get_engine, random_challenge)
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+
 app = Flask(__name__)
+
 app.config["JSON_SORT_KEYS"] = False
-CORS(app, resources={r"/api/*": {"origins": os.getenv("CORS_ORIGIN", "http://localhost:3000")}}, supports_credentials=True)
+CORS(
+    app,
+    resources={r"/api/*": {"origins": os.getenv("CORS_ORIGIN", "http://localhost:3000")}},
+    supports_credentials=True,
+)
 limiter = Limiter(get_remote_address, app=app, default_limits=["200 per hour"], storage_uri="memory://")
+
 JWT_SECRET = os.getenv("JWT_SECRET")
 THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "0.80"))
 MODEL_VERSION = os.getenv("INSIGHTFACE_MODEL", "buffalo_l")
-
-app = Flask(__name__)
 
 @app.route("/")
 def home():
@@ -43,6 +48,8 @@ def home():
         "project": "FaceAuth Enterprise",
         "message": "Backend is live!"
     }
+
+
 
 def utcnow(): return datetime.now(timezone.utc)
 def iso(): return utcnow().isoformat()
