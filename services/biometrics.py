@@ -2,8 +2,10 @@
 
 No biometric fallback is provided: if InsightFace cannot initialize,
 the API returns a controlled service error rather than authenticating a person.
+Model is always loaded from local disk — never downloaded at runtime.
 """
 import base64
+import logging
 import os
 from dataclasses import dataclass
 from typing import Iterable
@@ -15,6 +17,22 @@ try:
     from insightface.app import FaceAnalysis
 except ImportError as exc:  # surfaced by get_engine()
     FaceAnalysis = None
+
+logger = logging.getLogger("biometrics")
+
+# Path to bundled models checked into the repo.
+# FaceAnalysis(root=PROJECT_ROOT) looks for models under {root}/models/{name}.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
+
+
+def _model_available(name: str = "buffalo_s") -> bool:
+    """Return True when the model directory exists and contains .onnx files."""
+    model_dir = os.path.join(_MODELS_DIR, name)
+    if not os.path.isdir(model_dir):
+        return False
+    onnx_files = [f for f in os.listdir(model_dir) if f.endswith(".onnx")]
+    return len(onnx_files) > 0
 
 
 class BiometricError(ValueError):
@@ -43,9 +61,20 @@ class BiometricEngine:
     def __init__(self):
         if FaceAnalysis is None:
             raise RuntimeError("InsightFace must be installed before biometric authentication is enabled.")
+
+        model_name = os.getenv("INSIGHTFACE_MODEL", "buffalo_s")
+
+        # Never trigger a download — check local model bundle first
+        if not _model_available(model_name):
+            raise RuntimeError(
+                f"Face recognition model '{model_name}' not installed. "
+                "Run scripts/setup_models.py or bundle the model directory."
+            )
+
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if os.getenv("USE_GPU", "false").lower() == "true" else ["CPUExecutionProvider"]
-        self.recognizer = FaceAnalysis(name=os.getenv("INSIGHTFACE_MODEL", "buffalo_s"), providers=providers)
+        self.recognizer = FaceAnalysis(name=model_name, root=PROJECT_ROOT, providers=providers)
         self.recognizer.prepare(ctx_id=0 if os.getenv("USE_GPU", "false").lower() == "true" else -1, det_size=(640, 640))
+        logger.info("InsightFace loaded from %s (model=%s)", _MODELS_DIR, model_name)
 
     @staticmethod
     def decode(image_data: str) -> np.ndarray:
@@ -141,8 +170,7 @@ def get_engine() -> BiometricEngine:
         try:
             _engine = BiometricEngine()
         except Exception as exc:
-            import logging
-            logging.getLogger("biometrics").exception("InsightFace failed to initialise: %s", exc)
+            logger.exception("InsightFace failed to initialise: %s", exc)
             raise RuntimeError("Biometric service unavailable") from exc
     return _engine
 

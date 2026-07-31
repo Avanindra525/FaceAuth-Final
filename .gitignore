@@ -22,3 +22,7 @@ serviceAccountKey.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Model files too large for git
+# Downloaded during Render build via scripts/setup_models.py
+models/buffalo_s/*.onnx

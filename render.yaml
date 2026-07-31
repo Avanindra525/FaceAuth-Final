@@ -3,7 +3,7 @@ services:
     name: faceauth-final
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && python scripts/setup_models.py
     startCommand: gunicorn app:app --workers=1 --threads=2 --timeout=120
     envVars:
       - key: PYTHON_VERSION
