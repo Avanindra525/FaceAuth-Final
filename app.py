@@ -8,6 +8,7 @@ import io
 import os
 import secrets
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
@@ -18,6 +19,7 @@ from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+from werkzeug.exceptions import HTTPException
 
 from firebase import get_firestore_client
 from services.biometrics import BiometricError, average_embeddings, cosine_similarity, get_engine
@@ -32,7 +34,7 @@ CORS(
     resources={r"/api/*": {"origins": [
         origin.strip() for origin in os.getenv(
             "CORS_ORIGINS",
-            r"http://localhost:3000,https://.*\.vercel\.app"
+            r"http://localhost:3000,http://localhost:5173,https://.*\.vercel\.app,https://.*\.onrender\.com"
         ).split(",") if origin.strip()
     ]}},
     supports_credentials=True,
@@ -40,8 +42,12 @@ CORS(
 limiter = Limiter(get_remote_address, app=app, default_limits=["200 per hour"], storage_uri="memory://")
 
 JWT_SECRET = os.getenv("JWT_SECRET")
-THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "0.60"))
-MODEL_VERSION = os.getenv("INSIGHTFACE_MODEL", "buffalo_l")
+THRESHOLD = float(os.getenv("FACE_MATCH_THRESHOLD", "0.50"))
+MODEL_VERSION = os.getenv("INSIGHTFACE_MODEL", "buffalo_s")
+
+for name in ("INSIGHTFACE_MODEL", "JWT_SECRET", "SECRET_KEY", "DATABASE_URL", "FIREBASE_CREDENTIALS"):
+    if not os.getenv(name):
+        app.logger.warning("%s is not configured.", name)
 
 @app.route("/")
 def home():
@@ -62,6 +68,7 @@ def db():
 def clean_employee(value):
     value = dict(value)
     value.pop("embeddingVector", None)
+    value.pop("faceImage", None)
     return value
 
 def log(collection, payload):
@@ -160,13 +167,24 @@ def attendance(employee_id):
 
 @app.errorhandler(BiometricError)
 def biometric_error(error):
-    security("biometric_rejected", str(error), severity="warning")
+    app.logger.warning("BiometricError: %s", error, exc_info=True)
+    try:
+        security("biometric_rejected", str(error), severity="warning")
+    except Exception:
+        app.logger.exception("Failed to write biometric rejection log.")
     return jsonify({"error": str(error)}), 422
 
 @app.errorhandler(RuntimeError)
 def runtime_error(error):
     app.logger.exception(error)
-    return jsonify({"error": "A required secure service is unavailable."}), 503
+    return jsonify({"error": "Biometric service unavailable"}), 503
+
+@app.errorhandler(Exception)
+def unhandled_error(error):
+    if isinstance(error, HTTPException):
+        return jsonify({"error": error.description}), error.code
+    app.logger.error("Unhandled %s: %s\n%s", type(error).__name__, error, traceback.format_exc())
+    return jsonify({"error": "Server unavailable."}), 500
 
 
 @app.get("/health")
@@ -196,13 +214,21 @@ def employees():
     body = request.get_json(silent=True) or {}
     required = ("employeeId", "name", "email", "department", "designation", "phone")
     if any(not str(body.get(key, "")).strip() for key in required): return {"error": "Employee ID, name, email, department, designation and phone are required."}, 400
-    if employee_by_id(body["employeeId"]): return {"error": "Employee ID already exists."}, 409
+    existing_employee = employee_by_id(body["employeeId"])
     frames = body.get("frames", [])
     engine = get_engine(); results = [engine.extract(image) for image in frames]
     embedding = average_embeddings([result.embedding for result in results])
+    if existing_employee:
+        if not body.get("updateFace"):
+            return {"error": "Face already exists. Use Update Face."}, 409
+        updates = {"embeddingVector": embedding, "modelVersion": MODEL_VERSION, "lastUpdated": iso(), "faceImage": frames[0] if frames else None}
+        db().collection("employees").document(body["employeeId"]).update(updates)
+        audit("employee.face_updated", "system", body["employeeId"])
+        return clean_employee({**existing_employee, **updates})
     employee = {key: body[key].strip() for key in required}
     employee.update({"status": "active", "role": body.get("role", "Employee"), "createdAt": iso(), "lastUpdated": iso(),
-                     "documentId": employee["employeeId"], "embeddingVector": embedding, "modelVersion": MODEL_VERSION})
+                     "documentId": employee["employeeId"], "embeddingVector": embedding, "modelVersion": MODEL_VERSION,
+                     "faceImage": frames[0] if frames else None})
     db().collection("employees").document(employee["employeeId"]).set(employee)
     audit("employee.enrolled", "system", employee["employeeId"])
     log("notifications", {"type": "employee_registered", "employeeId": employee["employeeId"], "message": "Enrollment completed."})
@@ -226,10 +252,14 @@ def employee(employee_id):
 @app.post("/api/auth/verify")
 @limiter.limit("8 per minute")
 def verify_auth():
-    started = time.perf_counter(); body = request.get_json(silent=True) or {}; employee_id = body.get("employeeId", "")
+    started = time.perf_counter(); body = request.get_json(silent=True) or {}; employee_id = (body.get("employeeId") or body.get("staffId") or "").strip()
+    if not employee_id:
+        return {"matched": False, "verified": False, "reason": "Employee ID is required."}, 400
     emp = employee_by_id(employee_id)
     if not emp or emp.get("status") != "active":
-        security("failed_login", "Employee not found or inactive", employee_id); return {"verified": False, "reason": "Authentication failed."}, 401
+        security("failed_login", "Employee not found or inactive", employee_id); return {"matched": False, "verified": False, "reason": "Employee not found."}, 401
+    if not emp.get("embeddingVector"):
+        return {"matched": False, "verified": False, "reason": "Registered face is missing. Update Face."}, 409
     face = get_engine().extract(body.get("image", ""))
     similarity = cosine_similarity(face.embedding, emp["embeddingVector"])
     elapsed = round((time.perf_counter() - started) * 1000)
@@ -239,10 +269,11 @@ def verify_auth():
                "similarityScore": similarity, "status": "success" if verified else "failed"}
     log("login_history", history)
     if not verified:
-        security("failed_login", f"Low similarity: {similarity:.3f}", employee_id); return {"verified": False, "similarity": similarity, "reason": "Face not recognized."}, 401
+        security("failed_login", f"Low similarity: {similarity:.3f}", employee_id)
+        return {"matched": False, "verified": False, "score": similarity, "similarity": similarity, "reason": "Face mismatch."}, 401
     event = attendance(employee_id); tokens = issue_tokens(emp, bool(body.get("rememberMe")))
     audit("auth.success", employee_id, f"score={similarity:.3f}")
-    return {"verified": True, "employee": clean_employee(emp), "similarity": similarity, "confidence": round(similarity * 100, 1),
+    return {"matched": True, "verified": True, "score": similarity, "employee": clean_employee(emp), "similarity": similarity, "confidence": round(similarity * 100, 1),
             "verificationTime": elapsed, "attendance": event, "tokens": tokens}
 
 @app.post("/api/identity/verify")

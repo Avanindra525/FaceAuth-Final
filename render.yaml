@@ -4,7 +4,17 @@ services:
     env: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn app:app --workers=1 --threads=2 --timeout=120
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.10
+      - key: JWT_SECRET
+        sync: false
+      - key: SECRET_KEY
+        sync: false
+      - key: INSIGHTFACE_MODEL
+        value: buffalo_s
+      - key: USE_GPU
+        value: "false"
+      - key: FACE_MATCH_THRESHOLD
+        value: "0.50"

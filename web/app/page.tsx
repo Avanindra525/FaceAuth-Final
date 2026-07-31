@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { API_BASE, ApiError, api, type AuthResult, type Dashboard, type Employee } from "@/lib/api";
+import { API_BASE, ApiError, api, canvasToCompressedJpeg, type AuthResult, type Dashboard, type Employee } from "@/lib/api";
 
 type Tab = "dashboard" | "employees" | "enroll" | "verify" | "attendance" | "logs";
 
@@ -77,7 +77,7 @@ function useCamera() {
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Camera capture is unavailable.");
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.86);
+    return canvasToCompressedJpeg(canvas);
   }, [ready]);
 
   useEffect(() => stop, [stop]);
@@ -116,6 +116,7 @@ export default function Home() {
 
   const enrollCamera = useCamera();
   const verifyCamera = useCamera();
+  const isUpdatingFace = employees.some((employee) => employee.employeeId === enrollForm.employeeId.trim());
 
   useEffect(() => {
     const savedToken = localStorage.getItem("faceauth.token") || "";
@@ -240,11 +241,11 @@ export default function Home() {
       if (enrollFrames.length < 3) throw new Error("Capture at least three enrollment frames.");
       await api<Employee>("/api/employees", {
         token,
-        body: { ...enrollForm, frames: enrollFrames.slice(0, 5) }
+        body: { ...enrollForm, frames: enrollFrames.slice(0, 5), updateFace: isUpdatingFace }
       });
       setEnrollForm(emptyEmployee);
       setEnrollFrames([]);
-      setMessage({ type: "success", text: "Employee enrolled successfully." });
+      setMessage({ type: "success", text: isUpdatingFace ? "Face updated successfully." : "Employee enrolled successfully." });
       await loadEmployees();
     } catch (error) {
       showError(error);
@@ -544,7 +545,7 @@ export default function Home() {
               <div className="toolbar">
                 <button className="button" disabled={loading} onClick={() => void enrollEmployee()} type="button">
                   <UserPlus size={17} />
-                  Enroll employee
+                  {isUpdatingFace ? "Update Face" : "Enroll employee"}
                 </button>
               </div>
             </div>

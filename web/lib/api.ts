@@ -1,4 +1,14 @@
-export const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "";
+function resolveApiBase() {
+  const configured = process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "");
+  if (configured) return configured;
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    if (host === "localhost" || host === "127.0.0.1") return "http://localhost:8000";
+  }
+  return "https://faceauth-final.onrender.com";
+}
+
+export const API_BASE = resolveApiBase();
 
 const REQUEST_TIMEOUT_MS = 15000;
   
@@ -7,6 +17,25 @@ type ApiOptions = {
   method?: string;
   body?: unknown;
 };
+
+export function canvasToCompressedJpeg(canvas: HTMLCanvasElement, maxBytes = 300 * 1024) {
+  const sourceWidth = canvas.width || 640;
+  const sourceHeight = canvas.height || 480;
+  const scale = Math.min(1, 640 / Math.max(sourceWidth, sourceHeight));
+  const output = document.createElement("canvas");
+  output.width = Math.max(1, Math.round(sourceWidth * scale));
+  output.height = Math.max(1, Math.round(sourceHeight * scale));
+  const context = output.getContext("2d");
+  if (!context) throw new Error("Camera capture is unavailable.");
+  context.drawImage(canvas, 0, 0, output.width, output.height);
+
+  for (let quality = 0.82; quality >= 0.45; quality -= 0.08) {
+    const dataUrl = output.toDataURL("image/jpeg", quality);
+    const approximateBytes = Math.ceil((dataUrl.length - dataUrl.indexOf(",") - 1) * 0.75);
+    if (approximateBytes <= maxBytes || quality <= 0.45) return dataUrl;
+  }
+  return output.toDataURL("image/jpeg", 0.45);
+}
 
 export class ApiError extends Error {
   status?: number;
@@ -26,8 +55,6 @@ function userMessage(error: unknown) {
 }
 
 export async function api<T>(path: string, options: ApiOptions = {}): Promise<T> {
-  if (!API_BASE) throw new ApiError("Cannot connect to server.");
-
   const headers: Record<string, string> = {};
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
   if (options.token) headers.Authorization = `Bearer ${options.token}`;

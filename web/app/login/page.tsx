@@ -3,7 +3,7 @@
 import { Camera, ShieldCheck } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { API_BASE, api, type AuthResult } from "@/lib/api";
+import { API_BASE, api, canvasToCompressedJpeg, type AuthResult } from "@/lib/api";
 
 type Message = {
   type: "success" | "error" | "info";
@@ -72,7 +72,7 @@ export default function LoginPage() {
     const context = canvas.getContext("2d");
     if (!context) throw new Error("Camera capture is unavailable.");
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.86);
+    return canvasToCompressedJpeg(canvas);
   }
 
   async function login() {
@@ -136,7 +136,7 @@ export default function LoginPage() {
             Remember me
           </label>
         </div>
-        <p className="api-note">{API_BASE || "API URL is not configured."}</p>
+        <p className="api-note">{API_BASE}</p>
       </section>
     </main>
   );

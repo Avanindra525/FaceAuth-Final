@@ -44,7 +44,7 @@ class BiometricEngine:
         if FaceAnalysis is None:
             raise RuntimeError("InsightFace must be installed before biometric authentication is enabled.")
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if os.getenv("USE_GPU", "false").lower() == "true" else ["CPUExecutionProvider"]
-        self.recognizer = FaceAnalysis(name=os.getenv("INSIGHTFACE_MODEL", "buffalo_l"), providers=providers)
+        self.recognizer = FaceAnalysis(name=os.getenv("INSIGHTFACE_MODEL", "buffalo_s"), providers=providers)
         self.recognizer.prepare(ctx_id=0 if os.getenv("USE_GPU", "false").lower() == "true" else -1, det_size=(640, 640))
 
     @staticmethod
@@ -81,7 +81,7 @@ class BiometricEngine:
             raise BiometricError("Multiple faces detected. Only one person can authenticate at a time.")
         face = faces[0]
         confidence = float(face.det_score)
-        if confidence < 0.75:
+        if confidence < 0.50:
             raise BiometricError("Face confidence is too low. Improve lighting and try again.")
         quality = self._quality(frame, face.bbox)
         if quality < 0.20:
@@ -138,7 +138,12 @@ _engine = None
 def get_engine() -> BiometricEngine:
     global _engine
     if _engine is None:
-        _engine = BiometricEngine()
+        try:
+            _engine = BiometricEngine()
+        except Exception as exc:
+            import logging
+            logging.getLogger("biometrics").exception("InsightFace failed to initialise: %s", exc)
+            raise RuntimeError("Biometric service unavailable") from exc
     return _engine
 
 def cosine_similarity(left: Iterable[float], right: Iterable[float]) -> float:
