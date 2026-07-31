@@ -14,8 +14,9 @@ import {
   UserPlus,
   Users
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { API_BASE, api, type AuthResult, type Dashboard, type Employee } from "@/lib/api";
+import { API_BASE, ApiError, api, type AuthResult, type Dashboard, type Employee } from "@/lib/api";
 
 type Tab = "dashboard" | "employees" | "enroll" | "verify" | "attendance" | "logs";
 
@@ -94,6 +95,7 @@ function formatMetric(key: string) {
 }
 
 export default function Home() {
+  const router = useRouter();
   const [tab, setTab] = useState<Tab>("dashboard");
   const [message, setMessage] = useState<Message | null>(null);
   const [loading, setLoading] = useState(false);
@@ -110,6 +112,7 @@ export default function Home() {
   const [rememberMe, setRememberMe] = useState(false);
   const [enrollFrames, setEnrollFrames] = useState<string[]>([]);
   const [verifyFrames, setVerifyFrames] = useState<string[]>([]);
+  const [authReady, setAuthReady] = useState(false);
 
   const enrollCamera = useCamera();
   const verifyCamera = useCamera();
@@ -120,28 +123,51 @@ export default function Home() {
     setToken(savedToken);
     setEmployeeId(savedEmployee);
     setVerifyId(savedEmployee);
-  }, []);
+    setAuthReady(true);
+    if (!savedToken) router.replace("/login");
+  }, [router]);
+
+  const clearSession = useCallback((notice = "Please login again.") => {
+    localStorage.removeItem("faceauth.token");
+    localStorage.removeItem("faceauth.employeeId");
+    localStorage.removeItem("token");
+    localStorage.removeItem("employee");
+    sessionStorage.clear();
+    document.cookie.split(";").forEach((cookie) => {
+      const name = cookie.split("=")[0]?.trim();
+      if (name) document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
+    });
+    setToken("");
+    setEmployeeId("");
+    setVerifyId("");
+    setMessage({ type: "error", text: notice });
+    router.replace("/login");
+  }, [router]);
 
   const showError = useCallback((error: unknown) => {
+    if (error instanceof ApiError && error.status === 401) {
+      clearSession("Session expired.");
+      return;
+    }
     setMessage({ type: "error", text: error instanceof Error ? error.message : "Something went wrong." });
-  }, []);
+  }, [clearSession]);
 
   const loadDashboard = useCallback(async () => {
     setLoading(true);
     try {
-      setDashboard(await api<Dashboard>("/api/dashboard"));
+      setDashboard(await api<Dashboard>("/api/dashboard", { token }));
       setMessage(null);
     } catch (error) {
       showError(error);
     } finally {
       setLoading(false);
     }
-  }, [showError]);
+  }, [showError, token]);
 
   const loadEmployees = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await api<{ items: Employee[] }>("/api/employees?pageSize=100");
+      const data = await api<{ items: Employee[] }>("/api/employees?pageSize=100", { token });
       setEmployees(data.items);
       setMessage(null);
     } catch (error) {
@@ -149,14 +175,14 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, [showError]);
+  }, [showError, token]);
 
   const loadLogs = useCallback(async () => {
     setLoading(true);
     try {
       const [audit, security] = await Promise.all([
-        api<Array<Record<string, unknown>>>("/api/audit"),
-        api<Array<Record<string, unknown>>>("/api/security-logs")
+        api<Array<Record<string, unknown>>>("/api/audit", { token }),
+        api<Array<Record<string, unknown>>>("/api/security-logs", { token })
       ]);
       setAuditRows(audit);
       setSecurityRows(security);
@@ -166,7 +192,7 @@ export default function Home() {
     } finally {
       setLoading(false);
     }
-  }, [showError]);
+  }, [showError, token]);
 
   const loadAttendance = useCallback(async () => {
     if (!employeeId) {
@@ -190,11 +216,12 @@ export default function Home() {
   }, [employeeId, showError, token]);
 
   useEffect(() => {
+    if (!authReady || !token) return;
     if (tab === "dashboard") void loadDashboard();
     if (tab === "employees") void loadEmployees();
     if (tab === "logs") void loadLogs();
     if (tab === "attendance") void loadAttendance();
-  }, [loadAttendance, loadDashboard, loadEmployees, loadLogs, tab]);
+  }, [authReady, loadAttendance, loadDashboard, loadEmployees, loadLogs, tab, token]);
 
   const title = useMemo(() => nav.find((item) => item.id === tab)?.label || "Dashboard", [tab]);
 
@@ -212,6 +239,7 @@ export default function Home() {
     try {
       if (enrollFrames.length < 3) throw new Error("Capture at least three enrollment frames.");
       await api<Employee>("/api/employees", {
+        token,
         body: { ...enrollForm, frames: enrollFrames.slice(0, 5) }
       });
       setEnrollForm(emptyEmployee);
@@ -229,21 +257,19 @@ export default function Home() {
     setLoading(true);
     try {
       if (!verifyId.trim()) throw new Error("Employee ID is required.");
-      if (verifyFrames.length < 5) throw new Error("Capture five to ten verification frames.");
-      const challenge = await api<{ challengeId: string; challenge: string }>("/api/auth/challenge", { body: {} });
-      setMessage({ type: "info", text: `Complete liveness action: ${challenge.challenge}` });
+      const image = verifyCamera.capture();
       const result = await api<AuthResult>("/api/auth/verify", {
         body: {
           employeeId: verifyId.trim(),
-          challengeId: challenge.challengeId,
-          frames: verifyFrames.slice(0, 10),
-          rememberMe,
-          observations: { completed: true }
+          image,
+          rememberMe
         }
       });
       if (result.tokens?.accessToken && result.employee?.employeeId) {
         localStorage.setItem("faceauth.token", result.tokens.accessToken);
         localStorage.setItem("faceauth.employeeId", result.employee.employeeId);
+        localStorage.setItem("token", result.tokens.accessToken);
+        localStorage.setItem("employee", JSON.stringify(result.employee));
         setToken(result.tokens.accessToken);
         setEmployeeId(result.employee.employeeId);
       }
@@ -251,7 +277,7 @@ export default function Home() {
         type: result.verified ? "success" : "error",
         text: result.verified
           ? `Verified ${result.employee?.name || verifyId}. Attendance: ${result.attendance || "recorded"}.`
-          : result.reason || "Verification failed."
+          : result.reason || "Face not recognized."
       });
     } catch (error) {
       showError(error);
@@ -303,16 +329,34 @@ export default function Home() {
     } catch {
       // Local sign-out still clears stale sessions when the server token has expired.
     }
-    localStorage.removeItem("faceauth.token");
-    localStorage.removeItem("faceauth.employeeId");
-    setToken("");
-    setEmployeeId("");
-    setMessage({ type: "success", text: "Signed out." });
+    clearSession("Signed out.");
   }
 
-  function exportCsv() {
-    window.location.href = `${API_BASE}/api/reports/employees.csv`;
+  async function exportCsv() {
+    try {
+      if (!API_BASE) throw new Error("Cannot connect to server.");
+      const response = await fetch(`${API_BASE}/api/reports/employees.csv`, {
+        headers: { Authorization: `Bearer ${token}` },
+        credentials: "include"
+      });
+      if (response.status === 401) {
+        clearSession("Session expired.");
+        return;
+      }
+      if (!response.ok) throw new Error("Cannot connect to server.");
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "employees.csv";
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      showError(error);
+    }
   }
+
+  if (!authReady || !token) return null;
 
   return (
     <main className="shell">
@@ -376,6 +420,30 @@ export default function Home() {
               ))}
             </div>
             <div className="card">
+              <h3>Current User</h3>
+              <div className="activity-list">
+                <div className="activity-item">
+                  <strong>{dashboard?.currentUser?.name || employeeId || "Signed in"}</strong>
+                  <span>{dashboard?.currentUser?.department || ""} {dashboard?.currentUser?.designation || ""}</span>
+                </div>
+                <div className="activity-item">
+                  <strong>Last Login</strong>
+                  <span>{String(dashboard?.lastLogin?.timestamp || "No previous login recorded")}</span>
+                </div>
+              </div>
+            </div>
+            <div className="card">
+              <h3>Recent Attendance</h3>
+              <div className="activity-list">
+                {(dashboard?.recentAttendance || []).map((row, index) => (
+                  <div className="activity-item" key={index}>
+                    <strong>{String(row.name || row.employeeId || "Employee")}</strong>
+                    <span>{String(row.date || "")} {String(row.status || "")}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="card">
               <h3>Recent Activity</h3>
               <div className="activity-list">
                 {(dashboard?.recentActivity || []).map((row, index) => (
@@ -396,7 +464,7 @@ export default function Home() {
                 <RefreshCw size={17} />
                 Refresh
               </button>
-              <button className="button secondary" onClick={exportCsv} type="button">
+              <button className="button secondary" onClick={() => void exportCsv()} type="button">
                 <Download size={17} />
                 CSV
               </button>
@@ -498,10 +566,10 @@ export default function Home() {
                 <button
                   className="button"
                   disabled={!verifyCamera.ready}
-                  onClick={() => void captureBurst(verifyCamera, 8, setVerifyFrames)}
+                  onClick={() => void captureBurst(verifyCamera, 1, setVerifyFrames)}
                   type="button"
                 >
-                  Capture 8
+                  Capture
                 </button>
               </div>
               <div className="capture-strip">

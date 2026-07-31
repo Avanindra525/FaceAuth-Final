@@ -1,11 +1,20 @@
-import os
+"""Firebase Admin initialization helpers."""
+
 import json
-import FaceAu_admin
-from FaceAu_admin import credentials
+import os
 
-FaceAu_json = os.getenv("FaceAu_CREDENTIALS")
+import firebase_admin
+from firebase_admin import credentials, firestore
 
-cred = credentials.Certificate(json.loads(FaceAu_json))
 
-if not FaceAu_admin._apps:
-    FaceAu_admin.initialize_app(cred)
+def get_firestore_client():
+    if not firebase_admin._apps:
+        raw_credentials = os.getenv("FIREBASE_CREDENTIALS")
+        if not raw_credentials:
+            raise RuntimeError("FIREBASE_CREDENTIALS environment variable is missing.")
+        try:
+            credential_data = json.loads(raw_credentials)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("FIREBASE_CREDENTIALS must contain valid Firebase service account JSON.") from exc
+        firebase_admin.initialize_app(credentials.Certificate(credential_data))
+    return firestore.client()
