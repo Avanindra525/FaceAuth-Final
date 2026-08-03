@@ -1,6 +1,7 @@
 "use client";
 
-import { Camera, ShieldCheck } from "lucide-react";
+import { Camera, ShieldCheck, UserPlus } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { API_BASE, api, canvasToCompressedJpeg, type AuthResult } from "@/lib/api";
@@ -91,7 +92,7 @@ export default function LoginPage() {
       localStorage.setItem("employee", JSON.stringify(result.employee));
       sessionStorage.clear();
       stopCamera();
-      router.replace("/");
+      router.replace("/dashboard");
     } catch (error) {
       setMessage({ type: "error", text: error instanceof Error ? error.message : "Cannot connect to server." });
     } finally {

@@ -114,7 +114,7 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
     throw new ApiError("Cannot connect to server.", response.status);
   }
 
-  let data: Record<string, unknown> = {};
+let data: Record<string, unknown> = {};
   try {
     data = text ? JSON.parse(text) : {};
   } catch {
@@ -124,16 +124,25 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
   if (!response.ok) {
     const status = response.status;
     const message =
-      typeof data?.error === "string"
-        ? data.error
-        : typeof data?.reason === "string"
-          ? data.reason
-          : status === 503
-            ? "Biometric service temporarily unavailable."
-            : status === 500
-              ? "Server error."
-              : `Request failed with ${status}`;
+      typeof data?.message === "string" && data.message !== "Success"
+        ? data.message
+        : typeof data?.error === "string"
+          ? data.error
+          : typeof data?.reason === "string"
+            ? data.reason
+            : status === 503
+              ? "Biometric service temporarily unavailable."
+              : status === 429
+                ? "Too many attempts. Please wait a moment."
+                : status === 500
+                  ? "Server error."
+                  : `Request failed with ${status}`;
     throw new ApiError(message, status);
+  }
+
+  // Unwrap the standard { success, message, data } envelope when present.
+  if (data && typeof data === "object" && "success" in data && "data" in data) {
+    return data.data as T;
   }
 
   return data as T;
@@ -174,3 +183,29 @@ export type AuthResult = {
   guidance?: string[];
   retry?: boolean;
 };
+
+export type RegistrationResult = {
+  employeeId: string;
+  name: string;
+  department: string;
+  exists?: boolean;
+};
+
+export type RegisterPayload = {
+  employeeId: string;
+  name: string;
+  department: string;
+  email?: string;
+  designation?: string;
+  phone?: string;
+  frames: string[];
+  updateFace?: boolean;
+};
+
+/** Public registration / Update Face. No auth token required. */
+export async function registerEmployee(payload: RegisterPayload): Promise<RegistrationResult> {
+  return api<RegistrationResult>("/api/employees", {
+    method: "POST",
+    body: payload
+  });
+}

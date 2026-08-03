@@ -265,37 +265,74 @@ def health():
 @app.route("/api/employees", methods=["GET", "POST"])
 @limiter.limit("30 per minute")
 def employees():
-    auth_error = require_request_auth()
-    if auth_error:
-        return auth_error
     if request.method == "GET":
+        auth_error = require_request_auth()
+        if auth_error:
+            return auth_error
         department, search = request.args.get("department"), request.args.get("search", "").lower()
         page, size = max(1, int(request.args.get("page", 1))), min(100, max(1, int(request.args.get("pageSize", 20))))
         rows = [e for e in all_active_employees() if (not department or e.get("department") == department) and
                 (not search or search in (e.get("name", "") + e.get("employeeId", "") + e.get("email", "")).lower())]
-        return {"items": [clean_employee(e) for e in rows[(page-1)*size:page*size]], "total": len(rows), "page": page, "pageSize": size}
+        return ok({"items": [clean_employee(e) for e in rows[(page-1)*size:page*size]], "total": len(rows), "page": page, "pageSize": size}, "Employees listed.")
     body = request.get_json(silent=True) or {}
-    required = ("employeeId", "name", "email", "department", "designation", "phone")
-    if any(not str(body.get(key, "")).strip() for key in required): return {"error": "Employee ID, name, email, department, designation and phone are required."}, 400
-    existing_employee = employee_by_id(body["employeeId"])
+    # Public registration requires only ID, name and department; optional profile fields
+    # are preserved so admin/console flows still work.
+    required = ("employeeId", "name", "department")
+    if any(not str(body.get(key, "")).strip() for key in required):
+        return fail("Employee ID, name and department are required.", 400)
     frames = body.get("frames", [])
-    engine = get_engine(); results = [engine.extract(image) for image in frames]
-    embedding = average_embeddings([result.embedding for result in results])
+    if len(frames) < 3:
+        return fail("Capture at least three face images.", 400)
+    try:
+        engine = get_engine()
+        results = [engine.extract(image) for image in frames[:5]]
+        embedding = average_embeddings([result.embedding for result in results])
+    except BiometricError as exc:
+        return fail(str(exc), 422)
+    except RuntimeError as exc:
+        app.logger.error("Registration model error: %s", exc)
+        return fail("Biometric service unavailable.", 503)
+
+    existing_employee = employee_by_id(body["employeeId"])
+    now = iso()
     if existing_employee:
         if not body.get("updateFace"):
-            return {"error": "Face already exists. Use Update Face."}, 409
-        updates = {"embeddingVector": embedding, "modelVersion": MODEL_VERSION, "lastUpdated": iso(), "faceImage": frames[0] if frames else None}
+            return fail("Employee ID already exists. Use Update Face to replace the registered face.", 409, {"exists": True})
+        updates = {
+            "embeddingVector": embedding,
+            "modelVersion": MODEL_VERSION,
+            "lastUpdated": now,
+            "updatedAt": now,
+            "faceImage": frames[0] if frames else None,
+        }
+        # Optionally allow updating the profile fields on Update Face.
+        for key in ("name", "department", "email", "designation", "phone"):
+            if str(body.get(key, "")).strip():
+                updates[key] = body[key].strip()
         db().collection("employees").document(body["employeeId"]).update(updates)
         audit("employee.face_updated", "system", body["employeeId"])
-        return clean_employee({**existing_employee, **updates})
-    employee = {key: body[key].strip() for key in required}
-    employee.update({"status": "active", "role": body.get("role", "Employee"), "createdAt": iso(), "lastUpdated": iso(),
-                     "documentId": employee["employeeId"], "embeddingVector": embedding, "modelVersion": MODEL_VERSION,
-                     "faceImage": frames[0] if frames else None})
+        return ok(clean_employee({**existing_employee, **updates}), "Face updated successfully.")
+
+    # New employee registration
+    employee = {"employeeId": body["employeeId"].strip(), "name": body["name"].strip(), "department": body["department"].strip()}
+    for key in ("email", "designation", "phone"):
+        if str(body.get(key, "")).strip():
+            employee[key] = body[key].strip()
+    employee.update({
+        "status": "active",
+        "role": body.get("role", "Employee"),
+        "createdAt": now,
+        "updatedAt": now,
+        "lastUpdated": now,
+        "documentId": employee["employeeId"],
+        "embeddingVector": embedding,
+        "modelVersion": MODEL_VERSION,
+        "faceImage": frames[0] if frames else None,
+    })
     db().collection("employees").document(employee["employeeId"]).set(employee)
     audit("employee.enrolled", "system", employee["employeeId"])
     log("notifications", {"type": "employee_registered", "employeeId": employee["employeeId"], "message": "Enrollment completed."})
-    return clean_employee(employee), 201
+    return ok(clean_employee(employee), "Employee registered successfully.", 201)
 
 @app.route("/api/employees/<employee_id>", methods=["GET", "PATCH", "DELETE"])
 def employee(employee_id):
@@ -406,6 +443,14 @@ def verify_auth():
         log_stage("audit write started")
         audit("auth.success", employee_id, f"score={similarity:.3f}")
         log_stage("audit write completed")
+
+        # Persist lastLogin on the employee record for the dashboard.
+        try:
+            db().collection("employees").document(employee_id).update({"lastLogin": iso()})
+        except Exception as exc:
+            app.logger.warning("Failed to update lastLogin for %s: %s", employee_id, exc)
+        log_stage("lastLogin update completed")
+
         return finish({"success": True, "matched": True, "verified": True, "score": similarity,
                 "employee": clean_employee(emp), "similarity": similarity,
                 "confidence": round(similarity * 100, 1),
@@ -558,6 +603,12 @@ def log_startup_state():
     routes = sorted(str(rule) for rule in app.url_map.iter_rules())
     app.logger.info("Routes registered count=%s routes=%s", len(routes), routes)
     biometric_ready = _model_available(os.getenv("INSIGHTFACE_MODEL", "buffalo_s"))
+    diag = diagnose_models(os.getenv("INSIGHTFACE_MODEL", "buffalo_s"))
+    app.logger.info(
+        "Startup diagnostics: project_root=%s models_dir=%s model_name=%s available=%s detected=%s missing=%s",
+        diag["project_root"], diag["models_dir"], diag["model_name"],
+        diag["available"], diag["detected"], diag["missing"],
+    )
     app.logger.info("Biometric engine ready=%s projectRoot=%s modelsDir=%s", biometric_ready, PROJECT_ROOT, MODELS_DIR)
     try:
         get_firestore_client()
