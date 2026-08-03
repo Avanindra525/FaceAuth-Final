@@ -24,7 +24,7 @@ from flask_limiter.util import get_remote_address
 from werkzeug.exceptions import HTTPException
 
 from firebase import get_firestore_client
-from services.biometrics import BiometricError, MODELS_DIR, PROJECT_ROOT, _model_available, average_embeddings, cosine_similarity, get_engine
+from services.biometrics import BiometricError, MODELS_DIR, PROJECT_ROOT, _model_available, average_embeddings, cosine_similarity, diagnose_models, get_engine
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -103,6 +103,14 @@ def iso(): return utcnow().isoformat()
 
 def db():
     return get_firestore_client()
+
+def ok(payload=None, message="Success", status=200):
+    """Standard success JSON envelope."""
+    return {"success": True, "message": message, "data": payload}, status
+
+def fail(message, status=400, payload=None):
+    """Standard error JSON envelope."""
+    return {"success": False, "message": message, "data": payload}, status
 
 def clean_employee(value):
     value = dict(value)
@@ -211,19 +219,19 @@ def biometric_error(error):
         security("biometric_rejected", str(error), severity="warning")
     except Exception:
         app.logger.exception("Failed to write biometric rejection log.")
-    return jsonify({"error": str(error)}), 422
+    return jsonify({"success": False, "message": str(error), "data": None}), 422
 
 @app.errorhandler(RuntimeError)
 def runtime_error(error):
     app.logger.exception(error)
-    return jsonify({"error": "Biometric service unavailable"}), 503
+    return jsonify({"success": False, "message": "Biometric service unavailable", "data": None}), 503
 
 @app.errorhandler(Exception)
 def unhandled_error(error):
     if isinstance(error, HTTPException):
-        return jsonify({"error": error.description}), error.code
+        return jsonify({"success": False, "message": error.description, "data": None}), error.code
     app.logger.error("Unhandled %s: %s\n%s", type(error).__name__, error, traceback.format_exc())
-    return jsonify({"error": "Server unavailable."}), 500
+    return jsonify({"success": False, "message": "Server unavailable.", "data": None}), 500
 
 
 @app.get("/health")
@@ -238,7 +246,8 @@ def health():
         app.logger.error("Health check Firebase initialization failed: %s", exc, exc_info=True)
 
     # Check if model is available WITHOUT calling get_engine() or FaceAnalysis
-    biometric_ok = _model_available(os.getenv("INSIGHTFACE_MODEL", "buffalo_s"))
+    diag = diagnose_models(os.getenv("INSIGHTFACE_MODEL", "buffalo_s"))
+    biometric_ok = diag["available"]
 
     return {
         "status": "ok",
@@ -248,7 +257,8 @@ def health():
         "projectRoot": PROJECT_ROOT,
         "modelsDir": MODELS_DIR,
         "modelVersion": MODEL_VERSION,
-        "threshold": THRESHOLD
+        "threshold": THRESHOLD,
+        "model": diag
     }
 
 

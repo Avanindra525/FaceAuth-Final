@@ -51,25 +51,50 @@ def _elapsed_ms(started: float) -> int:
 
 def _model_available(name: str = "buffalo_s") -> bool:
     """Return True when the local model directory has required ONNX files."""
+    return not diagnose_models(name).get("missing")
+
+
+def diagnose_models(name: str = "buffalo_s") -> dict:
+    """Return a readable diagnostic dict for the bundled model directory.
+
+    Used for startup logging and the /health endpoint. Never downloads.
+    """
     model_dir = os.path.join(MODELS_DIR, name)
+    info = {
+        "project_root": PROJECT_ROOT,
+        "models_dir": MODELS_DIR,
+        "model_name": name,
+        "model_dir": model_dir,
+        "detected": [],
+        "missing": [],
+        "available": False,
+    }
     if not os.path.isdir(model_dir):
         logger.warning("Model directory not found: %s", model_dir)
-        return False
+        info["missing"] = list(_REQUIRED_ONNX)
+        return info
     files = set(os.listdir(model_dir))
-    required = set(_REQUIRED_ONNX)
-    missing = sorted(required - files)
+    info["detected"] = sorted(files)
+    missing = sorted(set(_REQUIRED_ONNX) - files)
+    info["missing"] = missing
+    info["available"] = not missing
     if missing:
-        logger.warning("Model directory %s is missing required files: %s", model_dir, missing)
-        return False
-    return True
+        logger.warning(
+            "Model directory %s is missing required files: %s (detected: %s)",
+            model_dir, missing, info["detected"],
+        )
+    return info
 
 
 def _local_model_dir(name: str) -> str:
     """Return the bundled model directory without downloading anything."""
     model_dir = os.path.join(MODELS_DIR, name)
     if not _model_available(name):
+        diag = diagnose_models(name)
         raise RuntimeError(
-            f"Face recognition model '{name}' is missing from bundled models at {model_dir}."
+            f"Face recognition model '{name}' is missing from bundled models at {diag['model_dir']}. "
+            f"Missing files: {diag['missing']}. Detected files: {diag['detected']}. "
+            "Bundle the two required ONNX files before deployment."
         )
     return model_dir
 
@@ -146,19 +171,23 @@ class BiometricEngine:
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if use_gpu else ["CPUExecutionProvider"]
 
         # Log everything before attempting initialization
+        diag = diagnose_models(model_name)
         logger.info("PROJECT_ROOT=%s", PROJECT_ROOT)
         logger.info("MODELS_DIR=%s", MODELS_DIR)
         logger.info("model_name=%s", model_name)
         logger.info("model_dir=%s", model_dir)
-        logger.info("model_available=%s", _model_available(model_name))
+        logger.info("model_available=%s", diag["available"])
+        logger.info("detected_onnx_files=%s", diag["detected"])
+        logger.info("missing_onnx_files=%s", diag["missing"])
         logger.info("providers=%s", providers)
         logger.info("allowed_modules=%s", _ALLOWED_MODULES)
 
         # Never trigger a download — check local model bundle first
-        if not _model_available(model_name):
+        if not diag["available"]:
             raise RuntimeError(
-                f"Face recognition model '{model_name}' not installed. "
-                "Bundle the model directory before deployment."
+                f"Face recognition model '{model_name}' not installed at {diag['model_dir']}. "
+                f"Missing files: {diag['missing']}. Detected files: {diag['detected']}. "
+                "Bundle the model files before deployment."
             )
         _disable_insightface_downloads(model_name)
 

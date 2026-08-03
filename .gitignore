@@ -9,9 +9,16 @@ __pycache__/
 .venv/
 venv/
 
-# Environment
+# Environment - NEVER commit secrets
 .env
+.env.local
+.env.production
+.web/.env
+web/.env.local
+web/.env.production
 serviceAccountKey.json
+*.pem
+*.key
 
 # Logs
 *.log
@@ -23,6 +30,11 @@ serviceAccountKey.json
 .DS_Store
 Thumbs.db
 
-# Model files too large for git
-# Downloaded during Render build via scripts/setup_models.py
-models/buffalo_s/*.onnx
+# InsightFace model files
+# The two REQUIRED files are committed to git (det_500m.onnx, w600k_mbf.onnx)
+# so Render can deploy the model bundle without runtime downloads.
+# Larger auxiliary models are intentionally ignored to keep the repo small.
+models/buffalo_s/1k3d68.onnx
+models/buffalo_s/2d106det.onnx
+models/buffalo_s/genderage.onnx
+
