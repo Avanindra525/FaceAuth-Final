@@ -11,6 +11,7 @@ function resolveApiBase() {
 export const API_BASE = resolveApiBase();
 
 const REQUEST_TIMEOUT_MS = 15000;
+let healthCheckPromise: Promise<void> | null = null;
   
 type ApiOptions = {
   token?: string;
@@ -54,7 +55,34 @@ function userMessage(error: unknown) {
   return "Cannot connect to server.";
 }
 
+async function ensureBackendHealthy() {
+  if (!healthCheckPromise) {
+    healthCheckPromise = (async () => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 5000);
+      try {
+        const response = await fetch(`${API_BASE}/health`, {
+          method: "GET",
+          credentials: "include",
+          signal: controller.signal
+        });
+        if (!response.ok) throw new ApiError("Cannot connect to server.", response.status);
+        const contentType = response.headers.get("content-type") || "";
+        if (!contentType.includes("application/json")) throw new ApiError("Cannot connect to server.", response.status);
+      } catch (error) {
+        healthCheckPromise = null;
+        throw new ApiError(userMessage(error));
+      } finally {
+        clearTimeout(timeout);
+      }
+    })();
+  }
+  return healthCheckPromise;
+}
+
 export async function api<T>(path: string, options: ApiOptions = {}): Promise<T> {
+  if (path === "/api/auth/verify") await ensureBackendHealthy();
+
   const headers: Record<string, string> = {};
   if (options.body !== undefined) headers["Content-Type"] = "application/json";
   if (options.token) headers.Authorization = `Bearer ${options.token}`;

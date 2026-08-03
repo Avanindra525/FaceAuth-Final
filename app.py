@@ -5,8 +5,10 @@ available. There is no image-hash or mock-recognition path in this service.
 """
 import csv
 import io
+import logging
 import os
 import secrets
+import sys
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -26,18 +28,26 @@ from services.biometrics import BiometricError, MODELS_DIR, PROJECT_ROOT, _model
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
+logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+
 app = Flask(__name__)
+app.logger.setLevel(logging.INFO)
 
 app.config["JSON_SORT_KEYS"] = False
 app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_CONTENT_LENGTH", str(8 * 1024 * 1024)))
+ALLOWED_ORIGINS = [
+    origin.strip() for origin in os.getenv(
+        "CORS_ORIGINS",
+        r"http://localhost:3000,http://localhost:5173,https://.*\.vercel\.app,https://.*\.onrender\.com"
+    ).split(",") if origin.strip()
+]
 CORS(
     app,
-    resources={r"/api/*": {"origins": [
-        origin.strip() for origin in os.getenv(
-            "CORS_ORIGINS",
-            r"http://localhost:3000,http://localhost:5173,https://.*\.vercel\.app,https://.*\.onrender\.com"
-        ).split(",") if origin.strip()
-    ]}},
+    resources={
+        r"/api/*": {"origins": ALLOWED_ORIGINS},
+        r"/health": {"origins": ALLOWED_ORIGINS},
+        r"/": {"origins": ALLOWED_ORIGINS},
+    },
     supports_credentials=True,
 )
 limiter = Limiter(get_remote_address, app=app, default_limits=["200 per hour"], storage_uri="memory://")
@@ -49,6 +59,34 @@ MODEL_VERSION = os.getenv("INSIGHTFACE_MODEL", "buffalo_s")
 for name in ("INSIGHTFACE_MODEL", "JWT_SECRET", "SECRET_KEY", "DATABASE_URL", "FIREBASE_CREDENTIALS"):
     if not os.getenv(name):
         app.logger.warning("%s is not configured.", name)
+
+
+@app.before_request
+def log_incoming_request():
+    request._started_at = time.perf_counter()
+    app.logger.info(
+        "Incoming request method=%s path=%s origin=%s content_length=%s remote_addr=%s",
+        request.method,
+        request.path,
+        request.headers.get("Origin"),
+        request.content_length,
+        request.headers.get("X-Forwarded-For", request.remote_addr),
+    )
+
+
+@app.after_request
+def log_outgoing_response(response):
+    started = getattr(request, "_started_at", None)
+    elapsed = round((time.perf_counter() - started) * 1000) if started else None
+    app.logger.info(
+        "Request completed method=%s path=%s status=%s elapsed_ms=%s",
+        request.method,
+        request.path,
+        response.status_code,
+        elapsed,
+    )
+    return response
+
 
 @app.route("/")
 def home():
@@ -190,13 +228,22 @@ def unhandled_error(error):
 
 @app.get("/health")
 def health():
-    db()  # Verify Firestore connection
+    firebase_ok = False
+    firebase_error = None
+    try:
+        db()
+        firebase_ok = True
+    except Exception as exc:
+        firebase_error = str(exc)
+        app.logger.error("Health check Firebase initialization failed: %s", exc, exc_info=True)
 
     # Check if model is available WITHOUT calling get_engine() or FaceAnalysis
     biometric_ok = _model_available(os.getenv("INSIGHTFACE_MODEL", "buffalo_s"))
 
     return {
         "status": "ok",
+        "firebase": firebase_ok,
+        "firebaseError": firebase_error,
         "biometric": biometric_ok,
         "projectRoot": PROJECT_ROOT,
         "modelsDir": MODELS_DIR,
@@ -495,9 +542,29 @@ def seed_firebase_test_employee():
     print("Connected Successfully")
 
 
+def log_startup_state():
+    app.logger.info("Application started")
+    app.logger.info("Listening on PORT=%s", os.environ.get("PORT", "5000"))
+    routes = sorted(str(rule) for rule in app.url_map.iter_rules())
+    app.logger.info("Routes registered count=%s routes=%s", len(routes), routes)
+    biometric_ready = _model_available(os.getenv("INSIGHTFACE_MODEL", "buffalo_s"))
+    app.logger.info("Biometric engine ready=%s projectRoot=%s modelsDir=%s", biometric_ready, PROJECT_ROOT, MODELS_DIR)
+    try:
+        get_firestore_client()
+        app.logger.info("Firebase initialized")
+    except Exception as exc:
+        app.logger.exception("Firebase initialization failed: %s", exc)
+
+
+try:
+    log_startup_state()
+except Exception as exc:
+    app.logger.exception("Startup diagnostics failed: %s", exc)
+
+
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 5000)),
+        port=int(os.environ["PORT"]) if "PORT" in os.environ else 5000,
         debug=False
     )
