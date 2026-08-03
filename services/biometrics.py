@@ -21,7 +21,8 @@ except ImportError as exc:  # surfaced by get_engine()
 logger = logging.getLogger("biometrics")
 
 # Path to bundled models checked into the repo.
-# FaceAnalysis(root=PROJECT_ROOT) looks for models under {root}/models/{name}.
+# __file__ is at {PROJECT_ROOT}/services/biometrics.py
+# FaceAnalysis(root=PROJECT_ROOT) internally resolves {root}/models/{name}
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
 
@@ -30,9 +31,13 @@ def _model_available(name: str = "buffalo_s") -> bool:
     """Return True when the model directory exists and contains .onnx files."""
     model_dir = os.path.join(_MODELS_DIR, name)
     if not os.path.isdir(model_dir):
+        logger.warning("Model directory not found: %s", model_dir)
         return False
     onnx_files = [f for f in os.listdir(model_dir) if f.endswith(".onnx")]
-    return len(onnx_files) > 0
+    found = len(onnx_files)
+    if found == 0:
+        logger.warning("No .onnx files in model directory: %s", model_dir)
+    return found > 0
 
 
 class BiometricError(ValueError):
@@ -63,6 +68,17 @@ class BiometricEngine:
             raise RuntimeError("InsightFace must be installed before biometric authentication is enabled.")
 
         model_name = os.getenv("INSIGHTFACE_MODEL", "buffalo_s")
+        model_dir = os.path.join(_MODELS_DIR, model_name)
+        use_gpu = os.getenv("USE_GPU", "false").lower() == "true"
+        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if use_gpu else ["CPUExecutionProvider"]
+
+        # Log everything before attempting initialization
+        logger.info("PROJECT_ROOT=%s", PROJECT_ROOT)
+        logger.info("_MODELS_DIR=%s", _MODELS_DIR)
+        logger.info("model_name=%s", model_name)
+        logger.info("model_dir=%s", model_dir)
+        logger.info("model_available=%s", _model_available(model_name))
+        logger.info("providers=%s", providers)
 
         # Never trigger a download — check local model bundle first
         if not _model_available(model_name):
@@ -71,10 +87,9 @@ class BiometricEngine:
                 "Run scripts/setup_models.py or bundle the model directory."
             )
 
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if os.getenv("USE_GPU", "false").lower() == "true" else ["CPUExecutionProvider"]
         self.recognizer = FaceAnalysis(name=model_name, root=PROJECT_ROOT, providers=providers)
-        self.recognizer.prepare(ctx_id=0 if os.getenv("USE_GPU", "false").lower() == "true" else -1, det_size=(640, 640))
-        logger.info("InsightFace loaded from %s (model=%s)", _MODELS_DIR, model_name)
+        self.recognizer.prepare(ctx_id=-1 if not use_gpu else 0, det_size=(640, 640))
+        logger.info("InsightFace initialized successfully (%s/%s)", _MODELS_DIR, model_name)
 
     @staticmethod
     def decode(image_data: str) -> np.ndarray:

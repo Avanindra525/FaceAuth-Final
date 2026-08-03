@@ -22,7 +22,7 @@ from flask_limiter.util import get_remote_address
 from werkzeug.exceptions import HTTPException
 
 from firebase import get_firestore_client
-from services.biometrics import BiometricError, average_embeddings, cosine_similarity, get_engine
+from services.biometrics import BiometricError, _model_available, average_embeddings, cosine_similarity, get_engine
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -191,9 +191,12 @@ def unhandled_error(error):
 def health():
     db()  # Verify Firestore connection
 
+    # Check if model is available WITHOUT calling get_engine() or FaceAnalysis
+    biometric_ok = _model_available(os.getenv("INSIGHTFACE_MODEL", "buffalo_s"))
+
     return {
         "status": "ok",
-        "mode": "biometric",
+        "biometric": biometric_ok,
         "modelVersion": MODEL_VERSION,
         "threshold": THRESHOLD
     }
@@ -252,38 +255,89 @@ def employee(employee_id):
 @app.post("/api/auth/verify")
 @limiter.limit("8 per minute")
 def verify_auth():
-    started = time.perf_counter(); body = request.get_json(silent=True) or {}; employee_id = (body.get("employeeId") or body.get("staffId") or "").strip()
-    if not employee_id:
-        return {"matched": False, "verified": False, "reason": "Employee ID is required."}, 400
-    emp = employee_by_id(employee_id)
-    if not emp or emp.get("status") != "active":
-        security("failed_login", "Employee not found or inactive", employee_id); return {"matched": False, "verified": False, "reason": "Employee not found."}, 401
-    if not emp.get("embeddingVector"):
-        return {"matched": False, "verified": False, "reason": "Registered face is missing. Update Face."}, 409
-    face = get_engine().extract(body.get("image", ""))
-    similarity = cosine_similarity(face.embedding, emp["embeddingVector"])
-    elapsed = round((time.perf_counter() - started) * 1000)
-    verified = similarity >= THRESHOLD
-    history = {"employeeId": employee_id, "timestamp": iso(), "device": request.user_agent.string, "browser": request.user_agent.browser,
-               "ip": request.headers.get("X-Forwarded-For", request.remote_addr), "location": None, "authenticationTime": elapsed,
-               "similarityScore": similarity, "status": "success" if verified else "failed"}
-    log("login_history", history)
-    if not verified:
-        security("failed_login", f"Low similarity: {similarity:.3f}", employee_id)
-        return {"matched": False, "verified": False, "score": similarity, "similarity": similarity, "reason": "Face mismatch."}, 401
-    event = attendance(employee_id); tokens = issue_tokens(emp, bool(body.get("rememberMe")))
-    audit("auth.success", employee_id, f"score={similarity:.3f}")
-    return {"matched": True, "verified": True, "score": similarity, "employee": clean_employee(emp), "similarity": similarity, "confidence": round(similarity * 100, 1),
-            "verificationTime": elapsed, "attendance": event, "tokens": tokens}
+    """Face verification endpoint with full error containment.
+
+    Every execution path returns JSON. The worker never crashes.
+    A 20-second wall-clock guard prevents hung requests.
+    """
+    started = time.perf_counter()
+    try:
+        body = request.get_json(silent=True) or {}
+        employee_id = (body.get("employeeId") or body.get("staffId") or "").strip()
+
+        if not employee_id:
+            return {"success": False, "verified": False, "reason": "Employee ID is required."}, 400
+
+        # 20-second timeout guard
+        if (time.perf_counter() - started) > 20:
+            return {"success": False, "verified": False, "reason": "Verification timeout."}, 408
+
+        emp = employee_by_id(employee_id)
+        if not emp or emp.get("status") != "active":
+            security("failed_login", "Employee not found or inactive", employee_id)
+            return {"success": False, "verified": False, "reason": "Employee not found."}, 401
+
+        if not emp.get("embeddingVector"):
+            return {"success": False, "verified": False, "reason": "Registered face is missing. Update Face."}, 409
+
+        # get_engine() may raise RuntimeError if model is missing / OOM — this is caught below
+        face = get_engine().extract(body.get("image", ""))
+
+        similarity = cosine_similarity(face.embedding, emp["embeddingVector"])
+        elapsed = round((time.perf_counter() - started) * 1000)
+        verified = similarity >= THRESHOLD
+
+        history = {"employeeId": employee_id, "timestamp": iso(), "device": request.user_agent.string,
+                   "browser": request.user_agent.browser,
+                   "ip": request.headers.get("X-Forwarded-For", request.remote_addr), "location": None,
+                   "authenticationTime": elapsed,
+                   "similarityScore": similarity, "status": "success" if verified else "failed"}
+        log("login_history", history)
+
+        if not verified:
+            security("failed_login", f"Low similarity: {similarity:.3f}", employee_id)
+            return {"success": False, "verified": False, "score": similarity, "similarity": similarity,
+                    "reason": "Face mismatch."}, 401
+
+        event = attendance(employee_id)
+        tokens = issue_tokens(emp, bool(body.get("rememberMe")))
+        audit("auth.success", employee_id, f"score={similarity:.3f}")
+        return {"success": True, "matched": True, "verified": True, "score": similarity,
+                "employee": clean_employee(emp), "similarity": similarity,
+                "confidence": round(similarity * 100, 1),
+                "verificationTime": elapsed, "attendance": event, "tokens": tokens}
+
+    except RuntimeError as exc:
+        app.logger.error("verify_auth RuntimeError: %s", exc)
+        return {"success": False, "verified": False, "reason": "Biometric service unavailable."}, 503
+    except BiometricError as exc:
+        app.logger.warning("verify_auth BiometricError: %s", exc)
+        return {"success": False, "verified": False, "reason": str(exc)}, 422
+    except Exception as exc:
+        app.logger.error("verify_auth unexpected error: %s", exc, exc_info=True)
+        return {"success": False, "verified": False, "reason": "Server error."}, 500
 
 @app.post("/api/identity/verify")
 @limiter.limit("10 per minute")
 def verify_identity():
-    started = time.perf_counter(); face = get_engine().extract((request.get_json(silent=True) or {}).get("image", ""))
-    similarity, employee = best_face_match(face.embedding); found = employee is not None and similarity >= THRESHOLD
-    audit("identity.lookup", "system", f"found={found}; score={similarity:.3f}")
-    return {"found": found, "similarity": similarity, "confidence": round(similarity * 100, 1), "verificationTime": round((time.perf_counter()-started)*1000),
-            "employee": clean_employee(employee) if found else None}
+    started = time.perf_counter()
+    try:
+        face = get_engine().extract((request.get_json(silent=True) or {}).get("image", ""))
+        similarity, employee = best_face_match(face.embedding)
+        found = employee is not None and similarity >= THRESHOLD
+        audit("identity.lookup", "system", f"found={found}; score={similarity:.3f}")
+        return {"found": found, "similarity": similarity, "confidence": round(similarity * 100, 1),
+                "verificationTime": round((time.perf_counter() - started) * 1000),
+                "employee": clean_employee(employee) if found else None}
+    except RuntimeError as exc:
+        app.logger.error("verify_identity RuntimeError: %s", exc)
+        return {"found": False, "error": "Biometric service unavailable."}, 503
+    except BiometricError as exc:
+        app.logger.warning("verify_identity BiometricError: %s", exc)
+        return {"found": False, "error": str(exc)}, 422
+    except Exception as exc:
+        app.logger.error("verify_identity unexpected error: %s", exc, exc_info=True)
+        return {"found": False, "error": "Server error."}, 500
 
 @app.get("/api/dashboard")
 @require_auth

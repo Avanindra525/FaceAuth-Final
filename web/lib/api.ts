@@ -94,13 +94,18 @@ export async function api<T>(path: string, options: ApiOptions = {}): Promise<T>
   }
 
   if (!response.ok) {
+    const status = response.status;
     const message =
       typeof data?.error === "string"
         ? data.error
         : typeof data?.reason === "string"
           ? data.reason
-          : `Request failed with ${response.status}`;
-    throw new ApiError(message, response.status);
+          : status === 503
+            ? "Biometric service temporarily unavailable."
+            : status === 500
+              ? "Server error."
+              : `Request failed with ${status}`;
+    throw new ApiError(message, status);
   }
 
   return data as T;
