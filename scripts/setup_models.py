@@ -1,52 +1,37 @@
-"""Download and extract InsightFace model during build phase.
+"""Validate bundled InsightFace models.
 
-This script must be run during Render build to pre-download models
-so they are available at runtime without triggering downloads.
+This project must deploy with models already present in the repository.
+The script intentionally performs no network access and never downloads files.
 """
-import os
+from pathlib import Path
 import sys
-import zipfile
-import urllib.request
-import shutil
 
-BASE_REPO_URL = "https://github.com/deepinsight/insightface/releases/download/v0.7"
+
 MODEL_NAME = "buffalo_s"
-MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+MODELS_DIR = PROJECT_ROOT / "models"
+REQUIRED_FILES = {"det_500m.onnx", "w600k_mbf.onnx"}
 
 
-def download_and_extract(name: str, dest_dir: str) -> None:
-    """Download model zip and extract into dest_dir."""
-    model_dir = os.path.join(dest_dir, name)
-    if os.path.isdir(model_dir) and os.listdir(model_dir):
-        print(f"[setup_models] Model '{name}' already exists at {model_dir}")
-        return
+def main() -> int:
+    model_dir = MODELS_DIR / MODEL_NAME
+    print(f"[setup_models] Project root: {PROJECT_ROOT}")
+    print(f"[setup_models] Models directory: {MODELS_DIR}")
+    print(f"[setup_models] Model directory: {model_dir}")
 
-    os.makedirs(dest_dir, exist_ok=True)
-    zip_path = os.path.join(dest_dir, f"{name}.zip")
-    url = f"{BASE_REPO_URL}/{name}.zip"
+    if not model_dir.is_dir():
+        print(f"[setup_models] Missing model directory: {model_dir}", file=sys.stderr)
+        return 1
 
-    print(f"[setup_models] Downloading {url} ...")
-    urllib.request.urlretrieve(url, zip_path)
-    print(f"[setup_models] Downloaded to {zip_path}")
+    files = {path.name for path in model_dir.iterdir() if path.is_file()}
+    missing = sorted(REQUIRED_FILES - files)
+    if missing:
+        print(f"[setup_models] Missing required model files: {missing}", file=sys.stderr)
+        return 1
 
-    os.makedirs(model_dir, exist_ok=True)
-    with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(model_dir)
-    print(f"[setup_models] Extracted to {model_dir}")
-
-    os.remove(zip_path)
-    print(f"[setup_models] Removed zip file {zip_path}")
-
-    files = os.listdir(model_dir)
-    print(f"[setup_models] Model files: {files}")
-
-
-def main() -> None:
-    print(f"[setup_models] Model directory: {MODELS_DIR}")
-    download_and_extract(MODEL_NAME, MODELS_DIR)
-    print("[setup_models] Done.")
+    print(f"[setup_models] Local model bundle is valid: {MODEL_NAME}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
-
+    raise SystemExit(main())

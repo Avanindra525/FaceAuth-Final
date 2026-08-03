@@ -3,8 +3,8 @@ services:
     name: faceauth-final
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt && python scripts/setup_models.py
-    startCommand: gunicorn app:app --workers=1 --threads=2 --timeout=120
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers=1 --threads=1 --timeout=60 --max-requests=200 --max-requests-jitter=20
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.10
@@ -18,3 +18,11 @@ services:
         value: "false"
       - key: FACE_MATCH_THRESHOLD
         value: "0.50"
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: OPENBLAS_NUM_THREADS
+        value: "1"
+      - key: NUMEXPR_NUM_THREADS
+        value: "1"
+      - key: MAX_CONTENT_LENGTH
+        value: "8388608"

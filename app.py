@@ -22,13 +22,14 @@ from flask_limiter.util import get_remote_address
 from werkzeug.exceptions import HTTPException
 
 from firebase import get_firestore_client
-from services.biometrics import BiometricError, _model_available, average_embeddings, cosine_similarity, get_engine
+from services.biometrics import BiometricError, MODELS_DIR, PROJECT_ROOT, _model_available, average_embeddings, cosine_similarity, get_engine
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 app = Flask(__name__)
 
 app.config["JSON_SORT_KEYS"] = False
+app.config["MAX_CONTENT_LENGTH"] = int(os.getenv("MAX_CONTENT_LENGTH", str(8 * 1024 * 1024)))
 CORS(
     app,
     resources={r"/api/*": {"origins": [
@@ -197,6 +198,8 @@ def health():
     return {
         "status": "ok",
         "biometric": biometric_ok,
+        "projectRoot": PROJECT_ROOT,
+        "modelsDir": MODELS_DIR,
         "modelVersion": MODEL_VERSION,
         "threshold": THRESHOLD
     }
@@ -247,7 +250,7 @@ def employee(employee_id):
     if request.method == "GET": return clean_employee(current)
     if request.method == "DELETE":
         db().collection("employees").document(employee_id).update({"status": "deleted", "lastUpdated": iso()}); audit("employee.deleted", "system", employee_id)
-        return "", 204
+        return {"success": True, "deleted": True, "employeeId": employee_id}
     changes = {key: value for key, value in (request.get_json(silent=True) or {}).items() if key in {"name", "email", "department", "designation", "phone", "status", "role"}}
     changes["lastUpdated"] = iso(); db().collection("employees").document(employee_id).update(changes); audit("employee.updated", "system", employee_id)
     return clean_employee({**current, **changes})
@@ -376,7 +379,7 @@ def export_employees():
 @require_roles("Admin", "HR", "Employee", "Security Officer")
 def logout():
     db().collection("sessions").document(request.identity["sid"]).update({"active": False, "endedAt": iso()})
-    return "", 204
+    return {"success": True}
 
 @app.get("/api/attendance/employee/<employee_id>")
 @require_auth

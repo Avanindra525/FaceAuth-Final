@@ -5,8 +5,11 @@ the API returns a controlled service error rather than authenticating a person.
 Model is always loaded from local disk — never downloaded at runtime.
 """
 import base64
+import contextlib
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
 from typing import Iterable
 
@@ -14,30 +17,92 @@ import cv2
 import numpy as np
 
 try:
+    import insightface.app.face_analysis as _face_analysis
     from insightface.app import FaceAnalysis
 except ImportError as exc:  # surfaced by get_engine()
+    _face_analysis = None
     FaceAnalysis = None
 
 logger = logging.getLogger("biometrics")
+logger.setLevel(logging.INFO)
+
+try:
+    cv2.setNumThreads(1)
+except Exception:
+    logger.debug("OpenCV thread limit could not be set.", exc_info=True)
 
 # Path to bundled models checked into the repo.
 # __file__ is at {PROJECT_ROOT}/services/biometrics.py
 # FaceAnalysis(root=PROJECT_ROOT) internally resolves {root}/models/{name}
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
+MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
+_MODELS_DIR = MODELS_DIR
+_ALLOWED_MODULES = ["detection", "recognition"]
+_REQUIRED_ONNX = ("det_500m.onnx", "w600k_mbf.onnx")
 
 
 def _model_available(name: str = "buffalo_s") -> bool:
-    """Return True when the model directory exists and contains .onnx files."""
-    model_dir = os.path.join(_MODELS_DIR, name)
+    """Return True when the local model directory has required ONNX files."""
+    model_dir = os.path.join(MODELS_DIR, name)
     if not os.path.isdir(model_dir):
         logger.warning("Model directory not found: %s", model_dir)
         return False
-    onnx_files = [f for f in os.listdir(model_dir) if f.endswith(".onnx")]
-    found = len(onnx_files)
-    if found == 0:
-        logger.warning("No .onnx files in model directory: %s", model_dir)
-    return found > 0
+    files = set(os.listdir(model_dir))
+    required = set(_REQUIRED_ONNX)
+    missing = sorted(required - files)
+    if missing:
+        logger.warning("Model directory %s is missing required files: %s", model_dir, missing)
+        return False
+    return True
+
+
+def _local_model_dir(name: str) -> str:
+    """Return the bundled model directory without downloading anything."""
+    model_dir = os.path.join(MODELS_DIR, name)
+    if not _model_available(name):
+        raise RuntimeError(
+            f"Face recognition model '{name}' is missing from bundled models at {model_dir}."
+        )
+    return model_dir
+
+
+def _disable_insightface_downloads(model_name: str) -> None:
+    """Force FaceAnalysis to resolve only the repo-local model directory."""
+    if _face_analysis is None:
+        return
+
+    def local_ensure_available(sub_dir, name, root=None, download_zip=False):
+        if sub_dir != "models" or name != model_name:
+            raise RuntimeError(f"Unexpected InsightFace model request: {sub_dir}/{name}")
+        return _local_model_dir(name)
+
+    _face_analysis.ensure_available = local_ensure_available
+
+
+@contextlib.contextmanager
+def _only_required_onnx_files(model_name: str):
+    """Make FaceAnalysis scan only detection and recognition models."""
+    if _face_analysis is None:
+        yield
+        return
+
+    model_dir = _local_model_dir(model_name)
+    expected_pattern = os.path.normcase(os.path.normpath(os.path.join(model_dir, "*.onnx")))
+    selected_files = [os.path.join(model_dir, filename) for filename in _REQUIRED_ONNX]
+    original_glob = _face_analysis.glob.glob
+
+    def local_glob(pattern):
+        normalized = os.path.normcase(os.path.normpath(pattern))
+        if normalized == expected_pattern:
+            logger.info("Restricting InsightFace ONNX scan to: %s", selected_files)
+            return selected_files
+        return original_glob(pattern)
+
+    _face_analysis.glob.glob = local_glob
+    try:
+        yield
+    finally:
+        _face_analysis.glob.glob = original_glob
 
 
 class BiometricError(ValueError):
@@ -68,28 +133,38 @@ class BiometricEngine:
             raise RuntimeError("InsightFace must be installed before biometric authentication is enabled.")
 
         model_name = os.getenv("INSIGHTFACE_MODEL", "buffalo_s")
-        model_dir = os.path.join(_MODELS_DIR, model_name)
+        model_dir = os.path.join(MODELS_DIR, model_name)
         use_gpu = os.getenv("USE_GPU", "false").lower() == "true"
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if use_gpu else ["CPUExecutionProvider"]
 
         # Log everything before attempting initialization
         logger.info("PROJECT_ROOT=%s", PROJECT_ROOT)
-        logger.info("_MODELS_DIR=%s", _MODELS_DIR)
+        logger.info("MODELS_DIR=%s", MODELS_DIR)
         logger.info("model_name=%s", model_name)
         logger.info("model_dir=%s", model_dir)
         logger.info("model_available=%s", _model_available(model_name))
         logger.info("providers=%s", providers)
+        logger.info("allowed_modules=%s", _ALLOWED_MODULES)
 
         # Never trigger a download — check local model bundle first
         if not _model_available(model_name):
             raise RuntimeError(
                 f"Face recognition model '{model_name}' not installed. "
-                "Run scripts/setup_models.py or bundle the model directory."
+                "Bundle the model directory before deployment."
             )
+        _disable_insightface_downloads(model_name)
 
-        self.recognizer = FaceAnalysis(name=model_name, root=PROJECT_ROOT, providers=providers)
-        self.recognizer.prepare(ctx_id=-1 if not use_gpu else 0, det_size=(640, 640))
-        logger.info("InsightFace initialized successfully (%s/%s)", _MODELS_DIR, model_name)
+        started = time.perf_counter()
+        with _only_required_onnx_files(model_name):
+            self.recognizer = FaceAnalysis(
+                name=model_name,
+                root=PROJECT_ROOT,
+                providers=providers,
+                allowed_modules=_ALLOWED_MODULES,
+            )
+        self.recognizer.prepare(ctx_id=-1 if not use_gpu else 0, det_size=(320, 320))
+        elapsed = round((time.perf_counter() - started) * 1000)
+        logger.info("InsightFace initialized successfully in %sms (%s/%s)", elapsed, MODELS_DIR, model_name)
 
     @staticmethod
     def decode(image_data: str) -> np.ndarray:
@@ -179,14 +254,28 @@ class BiometricEngine:
 
 
 _engine = None
+_engine_lock = threading.Lock()
+_engine_init_error = None
+
+
 def get_engine() -> BiometricEngine:
-    global _engine
+    global _engine, _engine_init_error
     if _engine is None:
+        if _engine_init_error is not None:
+            raise RuntimeError("Biometric service unavailable") from _engine_init_error
+        if not _engine_lock.acquire(blocking=False):
+            logger.warning("InsightFace initialization already in progress.")
+            raise RuntimeError("Biometric service is starting")
         try:
-            _engine = BiometricEngine()
+            if _engine is None:
+                logger.info("Starting lazy InsightFace initialization.")
+                _engine = BiometricEngine()
         except Exception as exc:
-            logger.exception("InsightFace failed to initialise: %s", exc)
+            _engine_init_error = exc
+            logger.exception("InsightFace failed to initialize: %s", exc)
             raise RuntimeError("Biometric service unavailable") from exc
+        finally:
+            _engine_lock.release()
     return _engine
 
 def cosine_similarity(left: Iterable[float], right: Iterable[float]) -> float:
