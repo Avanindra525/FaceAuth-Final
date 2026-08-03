@@ -121,7 +121,7 @@ export default function LoginPage() {
         </div>
         <video className="camera" muted playsInline ref={videoRef} />
         <div className="toolbar">
-          <button className="button secondary" onClick={() => void startCamera()} type="button" disabled={ready}>
+          <button className="button secondary" onClick={() => void startCamera()} type="button" disabled={ready || loading}>
             <Camera size={17} />
             Camera
           </button>
@@ -130,12 +130,19 @@ export default function LoginPage() {
           </button>
           <button className="button" onClick={() => void login()} type="button" disabled={loading || !ready || !employeeId.trim()}>
             <ShieldCheck size={17} />
-            Login
+            {loading ? "Verifying…" : "Login"}
+            {loading && <span className="spinner small" />}
           </button>
           <label className="toolbar">
             <input checked={rememberMe} onChange={(event) => setRememberMe(event.target.checked)} type="checkbox" />
             Remember me
           </label>
+        </div>
+        <div className="toolbar">
+          <Link className="button secondary" href="/register">
+            <UserPlus size={17} />
+            Register Employee
+          </Link>
         </div>
         <p className="api-note">{API_BASE}</p>
       </section>
