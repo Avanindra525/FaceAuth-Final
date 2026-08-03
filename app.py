@@ -261,33 +261,66 @@ def verify_auth():
     """Face verification endpoint with full error containment.
 
     Every execution path returns JSON. The worker never crashes.
-    A 20-second wall-clock guard prevents hung requests.
+    A 10-second wall-clock guard prevents hung biometric requests.
     """
     started = time.perf_counter()
+    deadline = started + 10.0
+
+    def elapsed_ms():
+        return round((time.perf_counter() - started) * 1000)
+
+    def remaining_seconds():
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            raise TimeoutError("Biometric verification timeout.")
+        return remaining
+
+    def log_stage(stage):
+        app.logger.info("verify_auth %s elapsed_ms=%s", stage, elapsed_ms())
+
+    def finish(payload, status=200):
+        log_stage("response returned")
+        app.logger.info("Verify request completed elapsed_ms=%s status=%s", elapsed_ms(), status)
+        return payload, status
+
+    def fail(payload, status):
+        app.logger.warning("Verify request failed elapsed_ms=%s status=%s payload=%s", elapsed_ms(), status, payload)
+        return payload, status
+
+    app.logger.info("Verify request started")
     try:
+        log_stage("request received")
         body = request.get_json(silent=True) or {}
+        log_stage("json parsed")
         employee_id = (body.get("employeeId") or body.get("staffId") or "").strip()
 
         if not employee_id:
-            return {"success": False, "verified": False, "reason": "Employee ID is required."}, 400
+            return fail({"success": False, "verified": False, "reason": "Employee ID is required."}, 400)
 
-        # 20-second timeout guard
-        if (time.perf_counter() - started) > 20:
-            return {"success": False, "verified": False, "reason": "Verification timeout."}, 408
-
+        log_stage("employee lookup started")
         emp = employee_by_id(employee_id)
+        log_stage("employee lookup completed")
+        remaining_seconds()
         if not emp or emp.get("status") != "active":
             security("failed_login", "Employee not found or inactive", employee_id)
-            return {"success": False, "verified": False, "reason": "Employee not found."}, 401
+            return fail({"success": False, "verified": False, "reason": "Employee not found."}, 401)
 
         if not emp.get("embeddingVector"):
-            return {"success": False, "verified": False, "reason": "Registered face is missing. Update Face."}, 409
+            return fail({"success": False, "verified": False, "reason": "Registered face is missing. Update Face."}, 409)
 
         # get_engine() may raise RuntimeError if model is missing / OOM — this is caught below
-        face = get_engine().extract(body.get("image", ""))
+        log_stage("get_engine started")
+        engine = get_engine(timeout_seconds=remaining_seconds())
+        log_stage("get_engine completed")
 
+        log_stage("face extract started")
+        face = engine.extract(body.get("image", ""), timeout_seconds=remaining_seconds())
+        log_stage("face extract completed")
+
+        log_stage("cosine similarity started")
         similarity = cosine_similarity(face.embedding, emp["embeddingVector"])
-        elapsed = round((time.perf_counter() - started) * 1000)
+        log_stage("cosine similarity completed")
+        elapsed = elapsed_ms()
         verified = similarity >= THRESHOLD
 
         history = {"employeeId": employee_id, "timestamp": iso(), "device": request.user_agent.string,
@@ -295,29 +328,43 @@ def verify_auth():
                    "ip": request.headers.get("X-Forwarded-For", request.remote_addr), "location": None,
                    "authenticationTime": elapsed,
                    "similarityScore": similarity, "status": "success" if verified else "failed"}
+        log_stage("login history write started")
         log("login_history", history)
+        log_stage("login history write completed")
+        remaining_seconds()
 
         if not verified:
             security("failed_login", f"Low similarity: {similarity:.3f}", employee_id)
-            return {"success": False, "verified": False, "score": similarity, "similarity": similarity,
-                    "reason": "Face mismatch."}, 401
+            return fail({"success": False, "verified": False, "score": similarity, "similarity": similarity,
+                    "reason": "Face mismatch."}, 401)
 
+        log_stage("attendance update started")
         event = attendance(employee_id)
+        log_stage("attendance update completed")
+        remaining_seconds()
+        log_stage("token issue started")
         tokens = issue_tokens(emp, bool(body.get("rememberMe")))
+        log_stage("token issue completed")
+        remaining_seconds()
+        log_stage("audit write started")
         audit("auth.success", employee_id, f"score={similarity:.3f}")
-        return {"success": True, "matched": True, "verified": True, "score": similarity,
+        log_stage("audit write completed")
+        return finish({"success": True, "matched": True, "verified": True, "score": similarity,
                 "employee": clean_employee(emp), "similarity": similarity,
                 "confidence": round(similarity * 100, 1),
-                "verificationTime": elapsed, "attendance": event, "tokens": tokens}
+                "verificationTime": elapsed, "attendance": event, "tokens": tokens})
 
+    except TimeoutError as exc:
+        app.logger.error("Verify request failed: timeout elapsed_ms=%s error=%s", elapsed_ms(), exc, exc_info=True)
+        return {"success": False, "message": "Biometric verification timeout."}, 503
     except RuntimeError as exc:
-        app.logger.error("verify_auth RuntimeError: %s", exc)
+        app.logger.error("Verify request failed: RuntimeError elapsed_ms=%s error=%s", elapsed_ms(), exc, exc_info=True)
         return {"success": False, "verified": False, "reason": "Biometric service unavailable."}, 503
     except BiometricError as exc:
-        app.logger.warning("verify_auth BiometricError: %s", exc)
+        app.logger.warning("Verify request failed: BiometricError elapsed_ms=%s error=%s", elapsed_ms(), exc)
         return {"success": False, "verified": False, "reason": str(exc)}, 422
     except Exception as exc:
-        app.logger.error("verify_auth unexpected error: %s", exc, exc_info=True)
+        app.logger.error("Verify request failed: unexpected elapsed_ms=%s error=%s", elapsed_ms(), exc, exc_info=True)
         return {"success": False, "verified": False, "reason": "Server error."}, 500
 
 @app.post("/api/identity/verify")

@@ -5,6 +5,7 @@ the API returns a controlled service error rather than authenticating a person.
 Model is always loaded from local disk — never downloaded at runtime.
 """
 import base64
+import concurrent.futures
 import contextlib
 import logging
 import os
@@ -39,6 +40,13 @@ MODELS_DIR = os.path.join(PROJECT_ROOT, "models")
 _MODELS_DIR = MODELS_DIR
 _ALLOWED_MODULES = ["detection", "recognition"]
 _REQUIRED_ONNX = ("det_500m.onnx", "w600k_mbf.onnx")
+_DEFAULT_TIMEOUT_SECONDS = 10.0
+_engine_init_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="biometric-init")
+_inference_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="biometric-infer")
+
+
+def _elapsed_ms(started: float) -> int:
+    return round((time.perf_counter() - started) * 1000)
 
 
 def _model_available(name: str = "buffalo_s") -> bool:
@@ -155,6 +163,7 @@ class BiometricEngine:
         _disable_insightface_downloads(model_name)
 
         started = time.perf_counter()
+        logger.info("FaceAnalysis constructor started.")
         with _only_required_onnx_files(model_name):
             self.recognizer = FaceAnalysis(
                 name=model_name,
@@ -162,8 +171,10 @@ class BiometricEngine:
                 providers=providers,
                 allowed_modules=_ALLOWED_MODULES,
             )
+        logger.info("FaceAnalysis constructor completed in %sms.", _elapsed_ms(started))
+        logger.info("recognizer.prepare started.")
         self.recognizer.prepare(ctx_id=-1 if not use_gpu else 0, det_size=(320, 320))
-        elapsed = round((time.perf_counter() - started) * 1000)
+        elapsed = _elapsed_ms(started)
         logger.info("InsightFace initialized successfully in %sms (%s/%s)", elapsed, MODELS_DIR, model_name)
 
     @staticmethod
@@ -191,9 +202,22 @@ class BiometricEngine:
         exposure = max(0.0, 1.0 - abs(brightness - 0.52) / 0.52)
         return float((sharpness * 0.6) + (exposure * 0.4))
 
-    def extract(self, image_data: str) -> FaceResult:
+    def extract(self, image_data: str, timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS) -> FaceResult:
+        started = time.perf_counter()
+        logger.info("decode image started.")
         frame = self.decode(image_data)
-        faces = self.recognizer.get(frame)
+        logger.info("decode image completed in %sms.", _elapsed_ms(started))
+
+        remaining = max(0.001, timeout_seconds - (time.perf_counter() - started))
+        logger.info("recognizer.get started with %.3fs remaining.", remaining)
+        future = _inference_executor.submit(self.recognizer.get, frame)
+        try:
+            faces = future.result(timeout=remaining)
+        except concurrent.futures.TimeoutError as exc:
+            logger.error("recognizer.get exceeded %.3fs; returning timeout.", remaining)
+            raise TimeoutError("Biometric verification timeout.") from exc
+        logger.info("recognizer.get completed in %sms.", _elapsed_ms(started))
+
         if len(faces) == 0:
             raise BiometricError("No face detected. Position one face in the camera frame.")
         if len(faces) > 1:
@@ -256,26 +280,48 @@ class BiometricEngine:
 _engine = None
 _engine_lock = threading.Lock()
 _engine_init_error = None
+_engine_init_future = None
 
 
-def get_engine() -> BiometricEngine:
-    global _engine, _engine_init_error
-    if _engine is None:
+def get_engine(timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS) -> BiometricEngine:
+    global _engine, _engine_init_error, _engine_init_future
+    started = time.perf_counter()
+
+    if _engine is not None:
+        logger.info("Biometric engine reused in %sms.", _elapsed_ms(started))
+        return _engine
+
+    if _engine_init_error is not None:
+        logger.error("Biometric engine unavailable from cached initialization error: %s", _engine_init_error)
+        raise RuntimeError("Biometric service unavailable") from _engine_init_error
+
+    with _engine_lock:
+        if _engine is not None:
+            logger.info("Biometric engine reused in %sms.", _elapsed_ms(started))
+            return _engine
         if _engine_init_error is not None:
             raise RuntimeError("Biometric service unavailable") from _engine_init_error
-        if not _engine_lock.acquire(blocking=False):
-            logger.warning("InsightFace initialization already in progress.")
-            raise RuntimeError("Biometric service is starting")
-        try:
-            if _engine is None:
-                logger.info("Starting lazy InsightFace initialization.")
-                _engine = BiometricEngine()
-        except Exception as exc:
+        if _engine_init_future is None:
+            logger.info("Starting lazy InsightFace initialization.")
+            _engine_init_future = _engine_init_executor.submit(BiometricEngine)
+        else:
+            logger.info("Biometric engine initialization already in progress.")
+
+    remaining = max(0.001, timeout_seconds - (time.perf_counter() - started))
+    try:
+        engine = _engine_init_future.result(timeout=remaining)
+    except concurrent.futures.TimeoutError as exc:
+        logger.error("Biometric engine initialization exceeded %.3fs.", remaining)
+        raise TimeoutError("Biometric verification timeout.") from exc
+    except Exception as exc:
+        with _engine_lock:
             _engine_init_error = exc
-            logger.exception("InsightFace failed to initialize: %s", exc)
-            raise RuntimeError("Biometric service unavailable") from exc
-        finally:
-            _engine_lock.release()
+        logger.exception("InsightFace failed to initialize: %s", exc)
+        raise RuntimeError("Biometric service unavailable") from exc
+
+    with _engine_lock:
+        _engine = engine
+    logger.info("Biometric engine initialized in %sms.", _elapsed_ms(started))
     return _engine
 
 def cosine_similarity(left: Iterable[float], right: Iterable[float]) -> float:
