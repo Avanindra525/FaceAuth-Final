@@ -415,6 +415,9 @@ def verify_auth():
         similarity = cosine_similarity(face.embedding, emp["embeddingVector"])
         log_stage("cosine similarity completed")
         elapsed = elapsed_ms()
+        print("Similarity:", similarity)
+        print("Threshold :", THRESHOLD)
+
         verified = similarity >= THRESHOLD
 
         history = {"employeeId": employee_id, "timestamp": iso(), "device": request.user_agent.string,
